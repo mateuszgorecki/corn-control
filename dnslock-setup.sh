@@ -486,6 +486,7 @@ LOCKED_FILES=(
   /etc/resolv.conf
   "$DC_DIR/dnscrypt-proxy.toml"
   "$DC_DIR/cloaking-rules.txt"
+  "$DC_DIR/allowed-names.txt"
   "$LOCK_DIR/dnslock.nft"
   "$LOCK_DIR/resolv.conf"
   "$LOCK_DIR/extra-blocked.txt"

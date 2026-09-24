@@ -1,6 +1,8 @@
-# dnslock: adult-content filter for Arch Linux
+# dnslock: adult-content filter for Arch Linux and macOS
 
 This is one script that blocks adult content at the DNS level for the **whole system**: every browser, every app with a built-in browser, and anything else that looks up a domain. You don't need any extensions.
+
+There are two scripts with the same layers and the same commands: `dnslock-setup.sh` for **Arch Linux** (described first) and `dnslock-setup-macos.sh` for **macOS** (see [macOS](#macos) below).
 
 ## Run it
 
@@ -90,3 +92,85 @@ sudo nft list table inet dnslock                           # counters show block
 - *"dnscrypt-proxy is not answering"*: run `journalctl -u dnscrypt-proxy -n 50`. The script stops **before** touching system DNS, so the machine keeps working.
 - *A normal site won't load*: it's probably a false positive. Put it in `allowed-names.txt`, then restart dnscrypt-proxy.
 - *Remove everything*: `sudo dnslock-unlock`, then disable `dnslock-guard.timer`, `dnslock-update.timer` and `dnslock-firewall.service`, run `nft delete table inet dnslock`, delete `/etc/NetworkManager/conf.d/90-dnslock.conf` and re-enable `systemd-resolved`.
+
+## macOS
+
+`dnslock-setup-macos.sh` does the same thing on macOS with the native tools: launchd instead of systemd, pf instead of nftables, `networksetup` instead of resolv.conf, Managed Preferences instead of `policies.json`, and `chflags uchg` instead of `chattr +i`. It runs on the stock `/bin/bash` 3.2 and needs nothing installed first (no Homebrew).
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mateuszgorecki/corn-control/main/dnslock-setup-macos.sh | sudo bash
+```
+
+Private repo, or from a clone:
+
+```bash
+gh api repos/mateuszgorecki/corn-control/contents/dnslock-setup-macos.sh \
+  -H "Accept: application/vnd.github.raw" | sudo bash
+
+sudo bash dnslock-setup-macos.sh
+```
+
+The `--lock` / `--no-lock` flags work the same way. At the end it runs 8 self-checks.
+
+### What's different on macOS
+
+| Layer | macOS version |
+|---|---|
+| **Install location** | Everything lives in `/usr/local/dnslock` (`bin/`, `etc/`, `var/` for logs). It's root-owned on purpose: Homebrew on Intel Macs makes `/usr/local/etc` and `/usr/local/sbin` user-writable, and these scripts run as root. `dnslock-lock`, `dnslock-unlock` and `dnslock-update-blocklist` are symlinked into `/usr/local/bin`. |
+| **Resolver** | `dnscrypt-proxy` is downloaded from its official GitHub release (latest version, arm64 or x86_64) and runs as the launchd daemon `local.dnslock.dnscrypt-proxy`. Re-run the script to upgrade it. |
+| **System DNS** | Every network service (Wi-Fi, Ethernet, Thunderbolt, USB adapters, disabled ones too) gets the manual DNS server `127.0.0.1`, which overrides DHCP and IPv6 router advertisements. Services added later (a new adapter, iPhone hotspot) are pinned by the guard. |
+| **iCloud Private Relay** | Safari's Private Relay sends DNS past the local resolver. `mask.icloud.com` and `mask-h2.icloud.com` are blocked, which is Apple's documented signal for Private Relay to switch itself off on this network. |
+| **Firewall** | pf anchor `dnslock` with the same rules as the nftables table. `/etc/pf.conf` isn't edited: the main ruleset is loaded from it with one extra `anchor "dnslock"` line, and pf is enabled with `pfctl -E`. |
+| **Browsers** | Policies go to `/Library/Managed Preferences/<domain>.plist` for Firefox, Zen, Chrome, Chromium, Brave and Edge. Managed Preferences take priority over anything set in `~/Library/Preferences`. Existing keys in those files are kept (an existing file is backed up once to `/usr/local/dnslock/etc/managed/<domain>.plist.orig`). Without MDM, macOS may empty that folder at boot, so the guard puts the files back. Safari has no DoH setting and uses system DNS. |
+| **Guard** | The launchd daemon `local.dnslock.guard` runs at boot and every 5 minutes. It restores the pf anchor, the resolver and updater daemons, DNS on every network service, and the browser policies. |
+| **Blocklist refresh** | The launchd daemon `local.dnslock.update` runs daily around noon (after wake if the Mac was asleep). Same 20000-entry safety check. |
+| **Lock** | `chflags uchg` on the configs, launchd plists, scripts, the dnscrypt-proxy binary and the policy files, including `allowed-names.txt`. Unlocking has the same 30-minute cooldown. |
+
+### Commands on macOS
+
+```bash
+sudo dnslock-lock
+sudo dnslock-unlock
+sudo dnslock-update-blocklist
+sudo nano /usr/local/dnslock/etc/allowed-names.txt    # un-block a false positive (unlock first)
+sudo nano /usr/local/dnslock/etc/extra-blocked.txt    # add your own domains (unlock first)
+sudo launchctl kickstart -k system/local.dnslock.dnscrypt-proxy   # restart the resolver
+```
+
+### Test it yourself on macOS
+
+```bash
+dig +short forcesafesearch.google.com && dig +short www.google.com   # same IP = SafeSearch works
+dig @8.8.8.8 apple.com                                               # should fail (firewall)
+curl -m4 https://1.1.1.1/dns-query                                   # should fail (DoH blocked)
+networksetup -getdnsservers Wi-Fi                                    # 127.0.0.1
+sudo pfctl -a dnslock -s rules -v                                    # counters show blocked attempts
+```
+
+### Things to know on macOS
+
+- **Hotel / airport Wi-Fi with a login page** may not open the portal, because the portal's DNS is ignored. The same is true on Arch.
+- **VPN apps and "Encrypted DNS" profiles.** A VPN that pushes its own DNS doesn't bypass the filter (pf rejects plain DNS to it), but it can break name resolution while it's connected. In the VPN app, set custom DNS to `127.0.0.1`. Configuration profiles with DNS settings and apps that install a DNS proxy (System Settings → General → VPN & Filters / Device Management) can override system DNS. dnslock can't block those, so treat installing one as a warning sign.
+- **Chrome policies** are checked at `chrome://policy`. Chrome, Brave and Edge apply these policies on unmanaged Macs, but a few other Chrome policies (not the ones used here) only work under MDM.
+- **Root can undo anything** here too: `sudo launchctl bootout` stops any daemon. The lock slows you down, it doesn't make it impossible.
+
+### Troubleshooting on macOS
+
+- *"dnscrypt-proxy is not answering"*: run `tail -n 50 /usr/local/dnslock/var/dnscrypt-proxy.log`. System DNS is left untouched in that case.
+- *"Port 53 is already in use"*: another local DNS server (dnsmasq, a Docker DNS proxy, AdGuard) is running. Stop it and re-run.
+- *Remove everything*: `sudo dnslock-unlock`, then:
+
+  ```bash
+  for l in guard update dnscrypt-proxy; do
+    sudo launchctl bootout system/local.dnslock.$l
+    sudo rm /Library/LaunchDaemons/local.dnslock.$l.plist
+  done
+  sudo pfctl -a dnslock -F all && sudo pfctl -f /etc/pf.conf
+  networksetup -listallnetworkservices | tail -n +2 | sed 's/^\*//' |
+    while IFS= read -r s; do sudo networksetup -setdnsservers "$s" empty; done
+  cd "/Library/Managed Preferences" && sudo rm -f org.mozilla.firefox.plist app.zen-browser.zen.plist \
+    com.google.Chrome.plist org.chromium.Chromium.plist com.brave.Browser.plist com.microsoft.Edge.plist
+  sudo rm -rf /usr/local/dnslock /usr/local/bin/dnslock-*
+  ```
+
+  If `/usr/local/dnslock/etc/managed/` has `.plist.orig` backups, copy them back into `/Library/Managed Preferences` before deleting the folder.
