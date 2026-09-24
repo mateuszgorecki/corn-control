@@ -34,6 +34,8 @@
 {
 set -euo pipefail
 exec </dev/null
+# set -e exits silently; say where it happened.
+trap 'bad "unexpected failure at line $LINENO: $BASH_COMMAND"' ERR
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin
 
 # ---------- settings ---------------------------------------------------------
@@ -322,7 +324,8 @@ EOF
 # otherwise the test below would pass against someone else's resolver.
 launchctl bootout "system/${LABEL}.dnscrypt-proxy" 2>/dev/null || true
 sleep 1
-port53=$( { lsof -nP -iUDP:53 2>/dev/null; lsof -nP -iTCP:53 -sTCP:LISTEN 2>/dev/null; } \
+# lsof exits 1 when it finds nothing, which is the good case here.
+port53=$( { lsof -nP -iUDP:53 2>/dev/null || true; lsof -nP -iTCP:53 -sTCP:LISTEN 2>/dev/null || true; } \
   | awk 'NR>1 && $9 !~ /->/ && $9 ~ /:53$/ {print $1}' | sort -u | tr '\n' ' ')
 [[ -z $port53 ]] || die "Port 53 is already in use by: $port53 — stop it first (system DNS NOT changed)."
 
@@ -398,7 +401,7 @@ if ! pfctl -s rules 2>/dev/null | grep -q '^anchor "dnslock"'; then
   { cat /etc/pf.conf; echo 'anchor "dnslock"'; } | pfctl -q -f - 2>/dev/null \
     || die "pf rejected /etc/pf.conf + our anchor line"
 fi
-pfctl -q -a dnslock -f "$ETC/dnslock.pf" 2>/dev/null
+pfctl -q -a dnslock -f "$ETC/dnslock.pf" 2>/dev/null || die "could not load the pf anchor"
 pfctl -s info 2>/dev/null | grep -q 'Status: Enabled' || pfctl -E >/dev/null 2>&1
 pfctl -s info 2>/dev/null | grep -q 'Status: Enabled' || die "could not enable pf"
 ok "outbound DNS/DoT locked to local resolver, public DoH IPs rejected"
@@ -427,9 +430,9 @@ apply_policy() {
     while [[ $kp == *.* ]]; do
       parent=${parent:+$parent.}${kp%%.*}; kp=${kp#*.}
       plutil -extract "$parent" xml1 -o /dev/null "$tmp" 2>/dev/null \
-        || plutil -insert "$parent" -json '{}' "$tmp"
+        || plutil -insert "$parent" -json '{}' "$tmp" || die "plutil: cannot create $parent in $dom"
     done
-    plutil -replace "$1" -json "$2" "$tmp"
+    plutil -replace "$1" -json "$2" "$tmp" || die "plutil: cannot set $1 in $dom"
     shift 2
   done
   plutil -lint -s "$tmp" >/dev/null || die "invalid policy plist for $dom"
