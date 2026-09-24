@@ -4,11 +4,42 @@ This is one script that blocks adult content at the DNS level for the **whole sy
 
 ## Run it
 
+One line, no clone needed:
+
 ```bash
+curl -fsSL https://raw.githubusercontent.com/mateuszgorecki/corn-control/main/dnslock-setup.sh | sudo bash
+```
+
+If the repo is private, `curl` gets a 404. Fetch the script through the GitHub CLI instead (`gh auth login` first). `gh` runs as your user and only `bash` runs as root, so your token never reaches the root process:
+
+```bash
+gh api repos/mateuszgorecki/corn-control/contents/dnslock-setup.sh \
+  -H "Accept: application/vnd.github.raw" | sudo bash
+```
+
+Or from a clone:
+
+```bash
+git clone https://github.com/mateuszgorecki/corn-control.git
+cd corn-control
 sudo bash dnslock-setup.sh
 ```
 
-It takes about a minute. At the end it runs 6 self-checks and asks whether to **lock**. Say no the first time and use the machine normally for a day, then run `sudo dnslock-lock`.
+It takes about a minute and installs everything it needs through `pacman`. Everything it sets up is a systemd service or timer, so from then on it starts by itself at every boot. You never need to run the script again unless you want to change a setting.
+
+At the end it runs 6 self-checks and asks whether to **lock**. Say no the first time and use the machine normally for a day, then run `sudo dnslock-lock`.
+
+To skip the question, pass a flag (after `-s --` when piping):
+
+| Flag | Effect |
+|---|---|
+| *(none)* | Ask at the end. If there's no terminal to ask on, don't lock. |
+| `--no-lock` | Don't ask, don't lock. For unattended installs. |
+| `--lock` | Don't ask, lock right away. |
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mateuszgorecki/corn-control/main/dnslock-setup.sh | sudo bash -s -- --no-lock
+```
 
 ## What it sets up
 

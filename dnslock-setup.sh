@@ -15,10 +15,20 @@
 #    5. Guard timer re-applies everything every 5 minutes if something drifts.
 #    6. Optional lock: chattr +i on all config; unlocking = 30-min cooldown.
 #
-#  Usage:   sudo bash dnslock-setup.sh
+#  Usage:   sudo bash dnslock-setup.sh [--lock | --no-lock]
+#           curl -fsSL <raw-url>/dnslock-setup.sh | sudo bash -s -- [--lock | --no-lock]
+#    --lock      lock at the end without asking
+#    --no-lock   don't lock and don't ask (unattended install)
+#    (no flag)   ask at the end; with no terminal to ask on, don't lock
 #  Re-run safe: yes (it unlocks its own files first, if you pass the cooldown).
 # =============================================================================
+
+# The whole script is one { ... } group: bash parses all of it before running
+# anything, so `curl ... | sudo bash` can't have its script text eaten by a
+# command that reads stdin. stdin is then detached; prompts use /dev/tty.
+{
 set -euo pipefail
+exec </dev/null
 
 # ---------- settings ---------------------------------------------------------
 UPSTREAM="cleanbrowsing-adult"                 # dnscrypt-proxy resolver name
@@ -51,7 +61,19 @@ die()  { bad "$*"; exit 1; }
 # dq SERVER NAME -> prints A records (empty if blocked/unreachable)
 dq()   { timeout 6 drill "@$1" "$2" A 2>/dev/null | awk '$3=="IN" && $4=="A"{print $5}'; }
 
-[[ $EUID -eq 0 ]] || die "Run as root: sudo bash $0"
+LOCK_MODE=ask
+for arg in "$@"; do
+  case $arg in
+    --lock)    LOCK_MODE=lock ;;
+    --no-lock) LOCK_MODE=no-lock ;;
+    -h|--help) sed -n '/^#  Usage:/,/^#  Re-run/p' "${BASH_SOURCE[0]:-}" 2>/dev/null \
+                 || echo "Usage: sudo bash dnslock-setup.sh [--lock | --no-lock]"
+               exit 0 ;;
+    *)         die "Unknown option: $arg (use --lock, --no-lock or --help)" ;;
+  esac
+done
+
+[[ $EUID -eq 0 ]] || die "Run as root: sudo bash dnslock-setup.sh"
 command -v pacman >/dev/null || die "This script is for Arch Linux (pacman not found)."
 
 # If a previous install is locked, refuse — unlocking goes through the cooldown.
@@ -504,10 +526,22 @@ fi
 
 # ---------- 11. lock? --------------------------------------------------------
 echo
-read -r -p "  Lock it now (chattr +i, unlock needs a ${COOLDOWN_MIN}-min cooldown)? [y/N] " ans
+ans=n
+case $LOCK_MODE in
+  lock) ans=y ;;
+  ask)
+    if { exec 3</dev/tty; } 2>/dev/null; then
+      read -r -u 3 -p "  Lock it now (chattr +i, unlock needs a ${COOLDOWN_MIN}-min cooldown)? [y/N] " ans || ans=n
+      exec 3<&-
+    else
+      info "No terminal to ask on, so not locking (pass --lock to lock unattended)."
+    fi ;;
+esac
 if [[ ${ans,,} == y* ]]; then
   "$SBIN/dnslock-lock"
 else
   info "Not locked. When you're happy with it: sudo dnslock-lock"
 fi
 echo
+exit
+}
