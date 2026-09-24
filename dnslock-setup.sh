@@ -50,7 +50,12 @@ LOCK_DIR=/etc/dnslock
 SBIN=/usr/local/sbin
 UNITS=/etc/systemd/system
 NM_CONF=/etc/NetworkManager/conf.d/90-dnslock.conf
-FF_POLICY=/etc/firefox/policies/policies.json
+# Firefox-based browsers: "system policy file|policies.json shipped in the
+# install dir". A system file replaces the shipped one, so that one is merged in.
+GECKO_POLICIES=(
+  "/etc/firefox/policies/policies.json|/usr/lib/firefox/distribution/policies.json"
+  "/etc/zen/policies/policies.json|/opt/zen-browser-bin/distribution/policies.json /usr/lib/zen-browser/distribution/policies.json"
+)
 CHROMIUM_POLICY_DIRS=(
   /etc/chromium/policies/managed
   /etc/opt/chrome/policies/managed
@@ -397,15 +402,22 @@ ff_ours='{"policies":{
   "Proxy":{"Mode":"none","Locked":true},
   "IPProtectionAvailable":false
 }}'
-mkdir -p "$(dirname "$FF_POLICY")"
-if [[ -s $FF_POLICY ]] && jq -e . "$FF_POLICY" >/dev/null 2>&1; then
-  [[ -f $FF_POLICY.dnslock-bak ]] || cp -a "$FF_POLICY" "$FF_POLICY.dnslock-bak"
-  jq -s '.[0] * .[1]' "$FF_POLICY" <(echo "$ff_ours") > "$FF_POLICY.new" && mv -f "$FF_POLICY.new" "$FF_POLICY"
-  ok "Firefox: merged into existing policies.json"
-else
-  echo "$ff_ours" | jq . > "$FF_POLICY"
-  ok "Firefox (+ forks reading /etc/firefox/policies)"
-fi
+for entry in "${GECKO_POLICIES[@]}"; do
+  pol=${entry%%|*}
+  # Merge order: shipped file, then our previous/user file, then our policies.
+  srcs=()
+  for f in ${entry#*|}; do
+    if [[ -s $f ]] && jq -e . "$f" >/dev/null 2>&1; then srcs+=("$f"); break; fi
+  done
+  if [[ -s $pol ]] && jq -e . "$pol" >/dev/null 2>&1; then
+    [[ -f $pol.dnslock-bak ]] || cp -a "$pol" "$pol.dnslock-bak"
+    srcs+=("$pol")
+  fi
+  mkdir -p "$(dirname "$pol")"
+  jq -s 'reduce .[] as $x ({}; . * $x)' ${srcs[@]+"${srcs[@]}"} <(echo "$ff_ours") > "$pol.new" \
+    && mv -f "$pol.new" "$pol"
+  ok "$pol${srcs[0]:+ (merged with ${srcs[*]})}"
+done
 
 for d in "${CHROMIUM_POLICY_DIRS[@]}"; do
   mkdir -p "$d"
@@ -477,7 +489,7 @@ LOCKED_FILES=(
   "$LOCK_DIR/dnslock.nft"
   "$LOCK_DIR/resolv.conf"
   "$LOCK_DIR/extra-blocked.txt"
-  "$FF_POLICY"
+  "${GECKO_POLICIES[@]%%|*}"
   "$UNITS/dnslock-firewall.service"
   "$UNITS/dnslock-guard.service"
   "$UNITS/dnslock-guard.timer"
