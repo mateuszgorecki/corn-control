@@ -552,9 +552,18 @@ check() { if eval "$2" >/dev/null 2>&1; then ok "$1"; pass=$((pass+1)); else bad
 check "normal sites resolve (archlinux.org)"         "getent ahostsv4 archlinux.org"
 test_domain=$(grep -m1 -vE '^[[:space:]]*(#|$)' "$DC_DIR/blocked-names.txt" | tr -d '[:space:]')
 check "a domain from the adult blocklist is blocked" "! getent ahostsv4 '$test_domain'"
-ss_ip=$(dq "${CB_BOOTSTRAP[0]}" forcesafesearch.google.com | head -1)
-check "Google SafeSearch forced" \
-  "[[ -n '$ss_ip' ]] && dq 127.0.0.1 www.google.com | grep -qx '$ss_ip'"
+# dnscrypt-proxy resolves the cloaking target on first use, so a query right
+# after startup can come back empty; give it a few tries.
+safesearch_ok() {
+  local ip
+  for _ in 1 2 3; do
+    ip=$(dq "${CB_BOOTSTRAP[0]}" forcesafesearch.google.com | head -1)
+    [[ -n $ip ]] && dq 127.0.0.1 www.google.com | grep -qx "$ip" && return 0
+    sleep 2
+  done
+  return 1
+}
+check "Google SafeSearch forced"                     safesearch_ok
 check "direct DNS to 8.8.8.8 is blocked"            "[[ -z \$(dq 8.8.8.8 archlinux.org) ]]"
 check "DoH to 1.1.1.1 is blocked"                   "! curl -s --max-time 4 -o /dev/null https://1.1.1.1/dns-query"
 check "Firefox canary domain returns nothing"       "! getent ahostsv4 use-application-dns.net"
