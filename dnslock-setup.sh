@@ -70,7 +70,7 @@ ok()   { printf '    %s✔%s %s\n' "$c_ok" "$c_0" "$*"; }
 bad()  { printf '    %s✘%s %s\n' "$c_bad" "$c_0" "$*"; }
 die()  { bad "$*"; exit 1; }
 # dq SERVER NAME -> prints A records (empty if blocked/unreachable)
-dq()   { timeout 6 drill "@$1" "$2" A 2>/dev/null | awk '$3=="IN" && $4=="A"{print $5}'; }
+dq()   { timeout 6 drill "@$1" "$2" A 2>/dev/null | awk '$1!~/^;/ && $3=="IN" && $4=="A"{print $5}'; }
 
 LOCK_MODE=ask
 for arg in "$@"; do
