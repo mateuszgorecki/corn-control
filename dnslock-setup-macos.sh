@@ -80,6 +80,8 @@ sysq() { dscacheutil -q host -a name "$1" 2>/dev/null | grep -q '^ip_address:'; 
 flush_dns() { dscacheutil -flushcache; killall -HUP mDNSResponder 2>/dev/null || true; }
 # network_services -> every network service name, disabled ones included
 network_services() { networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | sed 's/^\*//'; }
+# dns_of SERVICE -> its DNS servers, without the note disabled services add
+dns_of() { networksetup -getdnsservers "$1" 2>/dev/null | grep -v '^(' || true; }
 # load_daemon LABEL -> (re)load a daemon from $DAEMONS/LABEL.plist
 load_daemon() {
   launchctl bootout "system/$1" 2>/dev/null || true
@@ -503,7 +505,8 @@ done
 dns_changed=0
 while IFS= read -r svc; do
   [[ -n $svc ]] || continue
-  [[ $(networksetup -getdnsservers "$svc" 2>/dev/null) == 127.0.0.1 ]] && continue
+  # Disabled services add a "(Please note: ... is currently disabled)" line.
+  [[ $(networksetup -getdnsservers "$svc" 2>/dev/null | grep -v '^(') == 127.0.0.1 ]] && continue
   networksetup -setdnsservers "$svc" 127.0.0.1 && dns_changed=1
 done < <(networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | sed 's/^\*//')
 if (( dns_changed )); then
@@ -629,7 +632,7 @@ check() { if eval "$2" >/dev/null 2>&1; then ok "$1"; pass=$((pass+1)); else bad
 all_pinned() {
   local svc
   while IFS= read -r svc; do
-    [[ -z $svc || $(networksetup -getdnsservers "$svc") == 127.0.0.1 ]] || return 1
+    [[ -z $svc || $(dns_of "$svc") == 127.0.0.1 ]] || return 1
   done < <(network_services)
 }
 check "every network service uses 127.0.0.1"        all_pinned
