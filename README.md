@@ -46,11 +46,11 @@ curl -fsSL https://raw.githubusercontent.com/mateuszgorecki/corn-control/main/dn
 | Layer | What it does |
 |---|---|
 | **Resolver** | `dnscrypt-proxy` listens on `127.0.0.1:53`. It sends queries encrypted to the **CleanBrowsing Adult Filter**, the same provider you use on the router. |
-| **Blocklists** | HaGeZi **NSFW** (~75k domains) plus HaGeZi **encrypted-DNS bypass** (~3.3k DoH servers). A timer refreshes them daily. If a download comes back broken, the old list stays. |
+| **Blocklists** | HaGeZi **NSFW** (~80k domains), HaGeZi **encrypted-DNS bypass** (~3.3k DoH servers) and **StevenBlack hosts + porn** (~150k domains, includes ads/malware). Together about 220k unique domains. Lists can be plain domains or hosts format; the updater normalizes and de-duplicates them. A timer refreshes them daily. If a download comes back broken, the old list stays. |
 | **SafeSearch** | Google, Bing, DuckDuckGo and YouTube (moderate) are forced into safe mode at the DNS level. |
 | **System DNS** | `/etc/resolv.conf` → `127.0.0.1`. NetworkManager gets `dns=none` and `systemd-resolved` is turned off, so DNS from Wi-Fi/DHCP gets ignored. |
 | **Firewall** | nftables table `inet dnslock`. Plain DNS (53) and DoT (853) are **rejected** unless they go to the local resolver. Public DoH IPs (Cloudflare, Google, Quad9, AdGuard, NextDNS, Mullvad…) are rejected too. |
-| **Browsers** | DoH is turned off by policy in Firefox, Chromium, Chrome and Brave. These policies are written even for browsers you haven't installed yet. Chromium-family browsers also get Google SafeSearch and YouTube Restricted forced on. |
+| **Browsers** | By policy in Firefox, Chromium, Chrome and Brave: DoH is off, extensions that need the `proxy` permission (browser "VPN" and proxy extensions) are blocked and disabled if already installed, and proxy settings are locked to a direct connection. Firefox's built-in VPN is turned off, and so are Brave's VPN and "Private window with Tor". These policies are written even for browsers you haven't installed yet. Chromium-family browsers also get Google SafeSearch and YouTube Restricted forced on. |
 | **Guard** | Every 5 minutes a timer checks for drift and puts things back: the firewall table, the resolver, and resolv.conf. |
 | **Lock** | `chattr +i` on every config file. Unlocking means waiting through a **30-minute cooldown**. |
 
@@ -77,12 +77,13 @@ sudo nft list table inet dnslock                           # counters show block
 
 ## Things to know
 
-- **VPN (ProtonVPN):** WireGuard/OpenVPN clients often push their own DNS, and a VPN tunnel carries DNS past this firewall. Set the Proton app to use **custom DNS = 127.0.0.1**, or accept that the VPN's own NetShield filter takes over while it's on. The guard resets resolv.conf within 5 minutes either way.
+- **VPN (ProtonVPN):** a system VPN doesn't bypass the filter. dnscrypt-proxy's encrypted queries simply travel through the tunnel, and the firewall rejects plain DNS to the VPN's own resolver on the tunnel interface too. But WireGuard/OpenVPN clients often push their own DNS or rewrite resolv.conf, and that breaks name resolution until the guard restores it (within 5 minutes). Set the Proton app to use **custom DNS = 127.0.0.1** to avoid that.
+- **Browser VPN/proxy extensions** are blocked through the `proxy` permission. Firefox needs version 153 or newer for this. Legitimate extensions that ask for that permission (e.g. FoxyProxy) are blocked as well. The locked proxy settings also block a corporate proxy, so if you need one, change `ProxySettings` / `Proxy` in the policies.
 - **Proxies and VPNs aren't blocked** by the CleanBrowsing *Adult* filter itself. The *Family* filter blocks them. To make it stricter, change `UPSTREAM="cleanbrowsing-family"` and `CB_BOOTSTRAP=("185.228.168.168" "185.228.169.168")` at the top of the script and re-run it.
 - **Docker** containers use their own DNS config. That's usually fine, but they get the firewall rules too.
-- **Tor Browser** bypasses DNS entirely. If you want to close that door as well, don't install it, or add Tor directory hosts to the extra-blocked list.
+- **Tor Browser** bypasses DNS entirely (Brave's built-in Tor windows are disabled by policy, the standalone Tor Browser isn't). If you want to close that door as well, don't install it, or add Tor directory hosts to the extra-blocked list.
 - **Root can undo anything.** The lock and cooldown don't make it impossible, they just make it slow and deliberate. That's the point: stopping an impulse, not an admin.
-- **Restart open browsers** after the first run so they load the policies.
+- **Restart open browsers** after the first run so they load the policies. Check that they loaded under `about:policies` (Firefox) or `chrome://policy` / `brave://policy`.
 
 ## Troubleshooting
 

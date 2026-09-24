@@ -4,14 +4,17 @@
 # =============================================================================
 #  Layers:
 #    1. dnscrypt-proxy on 127.0.0.1:53, upstream = CleanBrowsing Adult Filter
-#       (encrypted), plus HaGeZi NSFW + DoH blocklists (auto-updated daily)
-#       and forced SafeSearch (Google, Bing, DuckDuckGo, YouTube).
+#       (encrypted), plus HaGeZi NSFW + DoH and StevenBlack porn blocklists
+#       (auto-updated daily) and forced SafeSearch (Google, Bing, DuckDuckGo,
+#       YouTube).
 #    2. System DNS pinned to 127.0.0.1 (NetworkManager told to keep hands off,
 #       systemd-resolved disabled).
 #    3. nftables: outbound DNS (53) / DoT (853) is rejected unless it goes to
 #       the local resolver; well-known public DoH resolvers are rejected too.
-#    4. Browser policies: DoH off in Firefox / Chromium / Chrome / Brave —
-#       written even for browsers you haven't installed yet.
+#    4. Browser policies: DoH off, proxy/VPN extensions blocked, proxy settings
+#       locked in Firefox / Chromium / Chrome / Brave (plus Firefox's built-in
+#       VPN and Brave's VPN + Tor windows off) — written even for browsers you
+#       haven't installed yet.
 #    5. Guard timer re-applies everything every 5 minutes if something drifts.
 #    6. Optional lock: chattr +i on all config; unlocking = 30-min cooldown.
 #
@@ -36,7 +39,10 @@ CB_BOOTSTRAP=("185.228.168.10" "185.228.169.11")  # CleanBrowsing Adult, plain D
 BLOCKLIST_URLS=(
   "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/nsfw-onlydomains.txt"
   "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/doh-onlydomains.txt"
+  "https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/porn/hosts"
 )
+# Lists can be plain domains or hosts format (0.0.0.0 domain); the updater
+# normalizes both.
 COOLDOWN_MIN=30
 
 DC_DIR=/etc/dnscrypt-proxy
@@ -183,17 +189,28 @@ ok "resolver: ${UPSTREAM} (encrypted), SafeSearch cloaking, allow/block lists"
 step "Installing blocklist auto-updater"
 {
   echo '#!/usr/bin/env bash'
-  echo '# Managed by dnslock-setup.sh — downloads HaGeZi lists into dnscrypt-proxy.'
+  echo '# Managed by dnslock-setup.sh — downloads the blocklists into dnscrypt-proxy.'
   echo 'set -euo pipefail'
   printf 'URLS=(%s)\n' "$(printf '"%s" ' "${BLOCKLIST_URLS[@]}")"
   cat <<'EOF'
 OUT=/etc/dnscrypt-proxy/blocked-names.txt
-tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
+tmp=$(mktemp); raw=$(mktemp)
+trap 'rm -f "$tmp" "$raw"' EXIT
 for url in "${URLS[@]}"; do
-  curl -fsSL --retry 3 --max-time 180 "$url" >> "$tmp"
-  echo >> "$tmp"
+  curl -fsSL --retry 3 --max-time 180 "$url" >> "$raw"
+  echo >> "$raw"
 done
-cat /etc/dnslock/extra-blocked.txt >> "$tmp"
+cat /etc/dnslock/extra-blocked.txt >> "$raw"
+# Plain domains pass through; hosts lines (0.0.0.0/127.0.0.1 domain) keep the
+# domain; other IPs (::1, fe80::…) and localhost-style names are dropped.
+awk '
+  { sub(/#.*/, "") }
+  NF == 0 { next }
+  NF == 1 { d = $1 }
+  NF >= 2 { if ($1 != "0.0.0.0" && $1 != "127.0.0.1") next; d = $2 }
+  d ~ /^(localhost|localhost\.localdomain|local|broadcasthost|0\.0\.0\.0)$/ { next }
+  !seen[d]++ { print d }
+' "$raw" > "$tmp"
 entries=$(grep -cvE '^[[:space:]]*(#|$)' "$tmp" || true)
 if (( entries < 20000 )); then
   echo "dnslock: download looks incomplete ($entries entries) — keeping the old list." >&2
@@ -371,8 +388,15 @@ systemctl restart dnslock-firewall.service
 ok "outbound DNS/DoT locked to local resolver, public DoH IPs rejected"
 
 # ---------- 7. browser policies ---------------------------------------------
-step "Writing browser policies (DoH off)"
-ff_ours='{"policies":{"DNSOverHTTPS":{"Enabled":false,"Locked":true}}}'
+step "Writing browser policies (DoH off, no proxy/VPN extensions)"
+# Proxy/VPN extensions need the "proxy" permission; blocking it disables them
+# (installed ones too) and locking proxy settings stops manual SOCKS/HTTP proxies.
+ff_ours='{"policies":{
+  "DNSOverHTTPS":{"Enabled":false,"Locked":true},
+  "ExtensionSettings":{"*":{"blocked_permissions":["proxy"]}},
+  "Proxy":{"Mode":"none","Locked":true},
+  "IPProtectionAvailable":false
+}}'
 mkdir -p "$(dirname "$FF_POLICY")"
 if [[ -s $FF_POLICY ]] && jq -e . "$FF_POLICY" >/dev/null 2>&1; then
   [[ -f $FF_POLICY.dnslock-bak ]] || cp -a "$FF_POLICY" "$FF_POLICY.dnslock-bak"
@@ -385,16 +409,22 @@ fi
 
 for d in "${CHROMIUM_POLICY_DIRS[@]}"; do
   mkdir -p "$d"
-  cat > "$d/dnslock.json" <<'EOF'
+  brave_extra=''
+  [[ $d == /etc/brave/* ]] && brave_extra=$',\n  "BraveVPNDisabled": true,\n  "TorDisabled": true'
+  cat > "$d/dnslock.json" <<EOF
 {
   "DnsOverHttpsMode": "off",
   "BuiltInDnsClientEnabled": false,
   "ForceGoogleSafeSearch": true,
-  "ForceYouTubeRestrict": 1
+  "ForceYouTubeRestrict": 1,
+  "ExtensionSettings": { "*": { "blocked_permissions": ["proxy", "vpnProvider"] } },
+  "ProxySettings": { "ProxyMode": "direct" }${brave_extra}
 }
 EOF
+  jq -e . "$d/dnslock.json" >/dev/null || die "invalid policy JSON in $d/dnslock.json"
 done
 ok "Chromium, Google Chrome, Brave (also applies if installed later)"
+info "proxy/VPN extensions blocked, proxy settings locked, Brave VPN + Tor windows off"
 info "${c_dim}Restart any open browser for policies to load.${c_0}"
 
 # ---------- 8. guard (self-healing) -----------------------------------------
