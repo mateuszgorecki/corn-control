@@ -360,6 +360,27 @@ info "${c_dim}New services (a USB adapter, iPhone hotspot) get pinned by the gua
 # ---------- 6. firewall -------------------------------------------------------
 step "Installing firewall rules (pf)"
 cb_set=$(printf '%s, ' "${CB_BOOTSTRAP[@]}"); cb_set=${cb_set%, }
+# Well-known public DoH/DoT resolvers. macOS's pfctl can't split a table
+# over several lines, so the list is joined onto one.
+DOH_IPS=(
+  1.1.1.1 1.0.0.1 1.1.1.2 1.0.0.2 1.1.1.3 1.0.0.3
+  8.8.8.8 8.8.4.4
+  9.9.9.9 149.112.112.112 9.9.9.10 149.112.112.10 9.9.9.11 149.112.112.11
+  208.67.222.222 208.67.220.220 208.67.222.123 208.67.220.123
+  94.140.14.14 94.140.15.15 94.140.14.140 94.140.14.141
+  194.242.2.2 194.242.2.3 194.242.2.4 194.242.2.9
+  76.76.2.0 76.76.10.0
+  45.90.28.0 45.90.30.0
+  2606:4700:4700::1111 2606:4700:4700::1001
+  2606:4700:4700::1112 2606:4700:4700::1002
+  2606:4700:4700::1113 2606:4700:4700::1003
+  2001:4860:4860::8888 2001:4860:4860::8844
+  2620:fe::fe 2620:fe::9 2620:fe::10 2620:fe::11
+  2620:119:35::35 2620:119:53::53
+  2a10:50c0::ad1:ff 2a10:50c0::ad2:ff
+  2a07:e340::2 2a07:e340::3 2a07:e340::4
+)
+doh_set=$(printf '%s, ' "${DOH_IPS[@]}"); doh_set=${doh_set%, }
 cat > "$ETC/dnslock.pf" <<EOF
 # Managed by dnslock-setup-macos.sh — loaded into its own pf anchor "dnslock",
 # does not touch /etc/pf.conf or your other rules.
@@ -368,32 +389,15 @@ cat > "$ETC/dnslock.pf" <<EOF
 table <dns_ok> const { ${cb_set} }
 
 # Well-known public DoH/DoT resolvers (browsers & apps with built-in DoH).
-table <doh> const {
-  1.1.1.1, 1.0.0.1, 1.1.1.2, 1.0.0.2, 1.1.1.3, 1.0.0.3,
-  8.8.8.8, 8.8.4.4,
-  9.9.9.9, 149.112.112.112, 9.9.9.10, 149.112.112.10, 9.9.9.11, 149.112.112.11,
-  208.67.222.222, 208.67.220.220, 208.67.222.123, 208.67.220.123,
-  94.140.14.14, 94.140.15.15, 94.140.14.140, 94.140.14.141,
-  194.242.2.2, 194.242.2.3, 194.242.2.4, 194.242.2.9,
-  76.76.2.0, 76.76.10.0,
-  45.90.28.0, 45.90.30.0,
-  2606:4700:4700::1111, 2606:4700:4700::1001,
-  2606:4700:4700::1112, 2606:4700:4700::1002,
-  2606:4700:4700::1113, 2606:4700:4700::1003,
-  2001:4860:4860::8888, 2001:4860:4860::8844,
-  2620:fe::fe, 2620:fe::9, 2620:fe::10, 2620:fe::11,
-  2620:119:35::35, 2620:119:53::53,
-  2a10:50c0::ad1:ff, 2a10:50c0::ad2:ff,
-  2a07:e340::2, 2a07:e340::3, 2a07:e340::4
-}
+table <doh> const { ${doh_set} }
 
 pass out quick proto { tcp, udp } to <dns_ok> port 53
 block return out quick on ! lo0 proto { tcp, udp } to any port { 53, 853 }
 block return out quick proto { tcp, udp } to <doh> port { 443, 853 }
 EOF
 
-pfctl -q -a dnslock -n -f "$ETC/dnslock.pf" 2>/dev/null \
-  || die "pf rejected the ruleset: pfctl -a dnslock -n -f $ETC/dnslock.pf"
+pf_err=$(pfctl -q -a dnslock -n -f "$ETC/dnslock.pf" 2>&1) \
+  || die "pf rejected $ETC/dnslock.pf: $(grep -v -e 'Use of -f' -e 'present in the main' -e 'See /etc/pf.conf' -e '^$' <<<"$pf_err")"
 # The main ruleset has to reference the anchor. It's reloaded from the
 # unchanged /etc/pf.conf with one line appended; the guard redoes this if
 # something (a macOS update, Internet Sharing) reloads pf.conf.
