@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  dnslock-setup.sh — system-wide adult-content DNS lock for Arch Linux
+#  corn-control-arch.sh — system-wide adult-content DNS lock for Arch Linux
 # =============================================================================
 #  Layers:
 #    1. dnscrypt-proxy on 127.0.0.1:53, upstream = CleanBrowsing Adult Filter
@@ -18,12 +18,12 @@
 #    5. Guard timer re-applies everything every 5 minutes if something drifts.
 #    6. Optional lock: chattr +i on all config; unlocking = 30-min cooldown.
 #
-#  Usage:   sudo bash dnslock-setup.sh [--lock | --no-lock]
-#           curl -fsSL <raw-url>/dnslock-setup.sh | sudo bash -s -- [--lock | --no-lock]
+#  Usage:   sudo bash corn-control-arch.sh [--lock | --no-lock]
+#           curl -fsSL <raw-url>/corn-control-arch.sh | sudo bash -s -- [--lock | --no-lock]
 #    --lock      lock at the end without asking
 #    --no-lock   don't lock and don't ask (unattended install)
 #    (no flag)   ask at the end; with no terminal to ask on, don't lock
-#  Re-run safe: yes (it unlocks its own files first, if you pass the cooldown).
+#  Re-run safe: yes. If it is locked, run corn-control-unlock first.
 # =============================================================================
 
 # The whole script is one { ... } group: bash parses all of it before running
@@ -46,10 +46,10 @@ BLOCKLIST_URLS=(
 COOLDOWN_MIN=30
 
 DC_DIR=/etc/dnscrypt-proxy
-LOCK_DIR=/etc/dnslock
+ETC=/etc/corn-control
 SBIN=/usr/local/sbin
 UNITS=/etc/systemd/system
-NM_CONF=/etc/NetworkManager/conf.d/90-dnslock.conf
+NM_CONF=/etc/NetworkManager/conf.d/90-corn-control.conf
 # Firefox-based browsers: "system policy file|policies.json shipped in the
 # install dir". A system file replaces the shipped one, so that one is merged in.
 GECKO_POLICIES=(
@@ -78,18 +78,18 @@ for arg in "$@"; do
     --lock)    LOCK_MODE=lock ;;
     --no-lock) LOCK_MODE=no-lock ;;
     -h|--help) sed -n '/^#  Usage:/,/^#  Re-run/p' "${BASH_SOURCE[0]:-}" 2>/dev/null \
-                 || echo "Usage: sudo bash dnslock-setup.sh [--lock | --no-lock]"
+                 || echo "Usage: sudo bash corn-control-arch.sh [--lock | --no-lock]"
                exit 0 ;;
     *)         die "Unknown option: $arg (use --lock, --no-lock or --help)" ;;
   esac
 done
 
-[[ $EUID -eq 0 ]] || die "Run as root: sudo bash dnslock-setup.sh"
+[[ $EUID -eq 0 ]] || die "Run as root: sudo bash corn-control-arch.sh"
 command -v pacman >/dev/null || die "This script is for Arch Linux (pacman not found)."
 
 # If a previous install is locked, refuse — unlocking goes through the cooldown.
-if [[ -f $LOCK_DIR/locked-files ]] && lsattr -d "$LOCK_DIR/locked-files" 2>/dev/null | awk '{print $1}' | grep -q i; then
-  die "DNS lock is active. Run 'sudo dnslock-unlock' first (${COOLDOWN_MIN}-min cooldown), then re-run."
+if [[ -f $ETC/locked-files ]] && lsattr -d "$ETC/locked-files" 2>/dev/null | awk '{print $1}' | grep -q i; then
+  die "DNS lock is active. Run 'sudo corn-control-unlock' first (${COOLDOWN_MIN}-min cooldown), then re-run."
 fi
 
 for fw in firewalld ufw; do
@@ -102,9 +102,9 @@ done
 # ---------- 1. packages ------------------------------------------------------
 step "Installing packages"
 pacman -S --needed --noconfirm dnscrypt-proxy nftables curl ldns jq e2fsprogs >/dev/null
-ok "dnscrypt-proxy, nftables, curl, ldns (drill), jq"
+ok "dnscrypt-proxy, nftables, curl, ldns (drill), jq, e2fsprogs (chattr)"
 
-mkdir -p "$LOCK_DIR"
+mkdir -p "$ETC"
 
 # ---------- 2. dnscrypt-proxy config ----------------------------------------
 step "Configuring dnscrypt-proxy"
@@ -116,7 +116,7 @@ fi
 bootstrap_list=$(printf "'%s:53', " "${CB_BOOTSTRAP[@]}"); bootstrap_list=${bootstrap_list%, }
 
 cat > "$DC_DIR/dnscrypt-proxy.toml" <<EOF
-# Managed by dnslock-setup.sh — edits are overwritten on re-run.
+# Managed by corn-control-arch.sh — edits are overwritten on re-run.
 listen_addresses = ['127.0.0.1:53']
 max_clients = 250
 
@@ -162,7 +162,7 @@ EOF
 
 # Forced SafeSearch. Left side = what apps ask for, right side = what they get.
 cat > "$DC_DIR/cloaking-rules.txt" <<'EOF'
-# Managed by dnslock-setup.sh
+# Managed by corn-control-arch.sh
 www.google.*              forcesafesearch.google.com
 =google.com               forcesafesearch.google.com
 www.bing.com              strict.bing.com
@@ -178,8 +178,8 @@ www.bing.com              strict.bing.com
 EOF
 
 # Your own extra blocks (merged into the list on every update).
-if [[ ! -f $LOCK_DIR/extra-blocked.txt ]]; then
-  cat > "$LOCK_DIR/extra-blocked.txt" <<'EOF'
+if [[ ! -f $ETC/extra-blocked.txt ]]; then
+  cat > "$ETC/extra-blocked.txt" <<'EOF'
 # Extra domains to block, one per line (subdomains included automatically).
 # Firefox canary domain: makes Firefox's automatic DoH switch itself off.
 use-application-dns.net
@@ -194,7 +194,7 @@ ok "resolver: ${UPSTREAM} (encrypted), SafeSearch cloaking, allow/block lists"
 step "Installing blocklist auto-updater"
 {
   echo '#!/usr/bin/env bash'
-  echo '# Managed by dnslock-setup.sh — downloads the blocklists into dnscrypt-proxy.'
+  echo '# Managed by corn-control-arch.sh — downloads the blocklists into dnscrypt-proxy.'
   echo 'set -euo pipefail'
   printf 'URLS=(%s)\n' "$(printf '"%s" ' "${BLOCKLIST_URLS[@]}")"
   cat <<'EOF'
@@ -205,7 +205,7 @@ for url in "${URLS[@]}"; do
   curl -fsSL --retry 3 --max-time 180 "$url" >> "$raw"
   echo >> "$raw"
 done
-cat /etc/dnslock/extra-blocked.txt >> "$raw"
+cat /etc/corn-control/extra-blocked.txt >> "$raw"
 # Plain domains pass through; hosts lines (0.0.0.0/127.0.0.1 domain) keep the
 # domain; other IPs (::1, fe80::…) and localhost-style names are dropped.
 awk '
@@ -218,30 +218,30 @@ awk '
 ' "$raw" > "$tmp"
 entries=$(grep -cvE '^[[:space:]]*(#|$)' "$tmp" || true)
 if (( entries < 20000 )); then
-  echo "dnslock: download looks incomplete ($entries entries) — keeping the old list." >&2
+  echo "corn-control: download looks incomplete ($entries entries) — keeping the old list." >&2
   exit 1
 fi
 install -m 644 "$tmp" "$OUT.new" && mv -f "$OUT.new" "$OUT"
 systemctl try-restart dnscrypt-proxy.service
-echo "dnslock: blocklist updated ($entries entries)."
+echo "corn-control: blocklist updated ($entries entries)."
 EOF
-} > "$SBIN/dnslock-update-blocklist"
-chmod 755 "$SBIN/dnslock-update-blocklist"
+} > "$SBIN/corn-control-update-blocklist"
+chmod 755 "$SBIN/corn-control-update-blocklist"
 
-cat > "$UNITS/dnslock-update.service" <<EOF
+cat > "$UNITS/corn-control-update.service" <<EOF
 [Unit]
-Description=dnslock: refresh adult-content blocklist
+Description=corn-control: refresh adult-content blocklist
 Wants=network-online.target
 After=network-online.target dnscrypt-proxy.service
 
 [Service]
 Type=oneshot
-ExecStart=$SBIN/dnslock-update-blocklist
+ExecStart=$SBIN/corn-control-update-blocklist
 EOF
 
-cat > "$UNITS/dnslock-update.timer" <<'EOF'
+cat > "$UNITS/corn-control-update.timer" <<'EOF'
 [Unit]
-Description=dnslock: refresh blocklist daily
+Description=corn-control: refresh blocklist daily
 
 [Timer]
 OnBootSec=10min
@@ -254,10 +254,10 @@ WantedBy=timers.target
 EOF
 
 # First download happens now, while normal DNS still works.
-if "$SBIN/dnslock-update-blocklist" >/dev/null 2>&1; then
+if "$SBIN/corn-control-update-blocklist" >/dev/null 2>&1; then
   ok "blocklist downloaded ($(grep -cvE '^[[:space:]]*(#|$)' "$DC_DIR/blocked-names.txt") entries), daily refresh enabled"
 else
-  [[ -f $DC_DIR/blocked-names.txt ]] || cp "$LOCK_DIR/extra-blocked.txt" "$DC_DIR/blocked-names.txt"
+  [[ -f $DC_DIR/blocked-names.txt ]] || cp "$ETC/extra-blocked.txt" "$DC_DIR/blocked-names.txt"
   bad "blocklist download failed — CleanBrowsing still filters; the timer will retry"
 fi
 
@@ -289,7 +289,7 @@ step "Pointing the whole system at 127.0.0.1"
 if command -v NetworkManager >/dev/null 2>&1; then
   mkdir -p "$(dirname "$NM_CONF")"
   cat > "$NM_CONF" <<'EOF'
-# Managed by dnslock-setup.sh — NetworkManager must not touch DNS.
+# Managed by corn-control-arch.sh — NetworkManager must not touch DNS.
 [main]
 dns=none
 rc-manager=unmanaged
@@ -303,26 +303,26 @@ if systemctl is-enabled --quiet systemd-resolved.service 2>/dev/null || systemct
   ok "systemd-resolved disabled"
 fi
 
-cat > "$LOCK_DIR/resolv.conf" <<'EOF'
-# Managed by dnslock-setup.sh
+cat > "$ETC/resolv.conf" <<'EOF'
+# Managed by corn-control-arch.sh
 nameserver 127.0.0.1
 options edns0 trust-ad
 EOF
 chattr -i /etc/resolv.conf 2>/dev/null || true
 [[ -L /etc/resolv.conf ]] && rm -f /etc/resolv.conf
-install -m 644 "$LOCK_DIR/resolv.conf" /etc/resolv.conf
+install -m 644 "$ETC/resolv.conf" /etc/resolv.conf
 ok "/etc/resolv.conf -> 127.0.0.1"
 
 # ---------- 6. firewall -------------------------------------------------------
 step "Installing firewall rules (nftables)"
 cb_set=$(printf '%s, ' "${CB_BOOTSTRAP[@]}"); cb_set=${cb_set%, }
-cat > "$LOCK_DIR/dnslock.nft" <<EOF
+cat > "$ETC/corn-control.nft" <<EOF
 #!/usr/sbin/nft -f
-# Managed by dnslock-setup.sh — own table, does not touch your other rules.
-table inet dnslock
-delete table inet dnslock
+# Managed by corn-control-arch.sh — own table, does not touch your other rules.
+table inet corn_control
+delete table inet corn_control
 
-table inet dnslock {
+table inet corn_control {
   # The only plain-DNS server anything may talk to (dnscrypt-proxy bootstrap).
   set dns_ok4 {
     type ipv4_addr
@@ -368,9 +368,9 @@ table inet dnslock {
 }
 EOF
 
-cat > "$UNITS/dnslock-firewall.service" <<'EOF'
+cat > "$UNITS/corn-control-firewall.service" <<'EOF'
 [Unit]
-Description=dnslock: block DNS/DoH bypass
+Description=corn-control: block DNS/DoH bypass
 Wants=network-pre.target
 Before=network-pre.target
 After=nftables.service
@@ -379,17 +379,17 @@ PartOf=nftables.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/nft -f /etc/dnslock/dnslock.nft
-ExecReload=/usr/bin/nft -f /etc/dnslock/dnslock.nft
+ExecStart=/usr/bin/nft -f /etc/corn-control/corn-control.nft
+ExecReload=/usr/bin/nft -f /etc/corn-control/corn-control.nft
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-nft -c -f "$LOCK_DIR/dnslock.nft" || die "nftables rejected the ruleset (see error above)"
+nft -c -f "$ETC/corn-control.nft" || die "nftables rejected the ruleset (see error above)"
 systemctl daemon-reload
-systemctl enable dnslock-firewall.service >/dev/null 2>&1
-systemctl restart dnslock-firewall.service
+systemctl enable corn-control-firewall.service >/dev/null 2>&1
+systemctl restart corn-control-firewall.service
 ok "outbound DNS/DoT locked to local resolver, public DoH IPs rejected"
 
 # ---------- 7. browser policies ---------------------------------------------
@@ -410,7 +410,7 @@ for entry in "${GECKO_POLICIES[@]}"; do
     if [[ -s $f ]] && jq -e . "$f" >/dev/null 2>&1; then srcs+=("$f"); break; fi
   done
   if [[ -s $pol ]] && jq -e . "$pol" >/dev/null 2>&1; then
-    [[ -f $pol.dnslock-bak ]] || cp -a "$pol" "$pol.dnslock-bak"
+    [[ -f $pol.corn-control-bak ]] || cp -a "$pol" "$pol.corn-control-bak"
     srcs+=("$pol")
   fi
   mkdir -p "$(dirname "$pol")"
@@ -423,7 +423,7 @@ for d in "${CHROMIUM_POLICY_DIRS[@]}"; do
   mkdir -p "$d"
   brave_extra=''
   [[ $d == /etc/brave/* ]] && brave_extra=$',\n  "BraveVPNDisabled": true,\n  "TorDisabled": true'
-  cat > "$d/dnslock.json" <<EOF
+  cat > "$d/corn-control.json" <<EOF
 {
   "DnsOverHttpsMode": "off",
   "BuiltInDnsClientEnabled": false,
@@ -433,7 +433,7 @@ for d in "${CHROMIUM_POLICY_DIRS[@]}"; do
   "ProxySettings": { "ProxyMode": "direct" }${brave_extra}
 }
 EOF
-  jq -e . "$d/dnslock.json" >/dev/null || die "invalid policy JSON in $d/dnslock.json"
+  jq -e . "$d/corn-control.json" >/dev/null || die "invalid policy JSON in $d/corn-control.json"
 done
 ok "Chromium, Google Chrome, Brave (also applies if installed later)"
 info "proxy/VPN extensions blocked, proxy settings locked, Brave VPN + Tor windows off"
@@ -441,32 +441,32 @@ info "${c_dim}Restart any open browser for policies to load.${c_0}"
 
 # ---------- 8. guard (self-healing) -----------------------------------------
 step "Installing guard (re-applies settings every 5 min)"
-cat > "$SBIN/dnslock-guard" <<'EOF'
+cat > "$SBIN/corn-control-guard" <<'EOF'
 #!/usr/bin/env bash
-# Managed by dnslock-setup.sh — puts things back if anything drifted.
-nft list table inet dnslock >/dev/null 2>&1 || nft -f /etc/dnslock/dnslock.nft
+# Managed by corn-control-arch.sh — puts things back if anything drifted.
+nft list table inet corn_control >/dev/null 2>&1 || nft -f /etc/corn-control/corn-control.nft
 systemctl is-active --quiet dnscrypt-proxy.service || systemctl restart dnscrypt-proxy.service
-if ! cmp -s /etc/resolv.conf /etc/dnslock/resolv.conf; then
+if ! cmp -s /etc/resolv.conf /etc/corn-control/resolv.conf; then
   chattr -i /etc/resolv.conf 2>/dev/null; rm -f /etc/resolv.conf
-  install -m 644 /etc/dnslock/resolv.conf /etc/resolv.conf
-  [[ -f /etc/dnslock/locked ]] && chattr +i /etc/resolv.conf
+  install -m 644 /etc/corn-control/resolv.conf /etc/resolv.conf
+  [[ -f /etc/corn-control/locked ]] && chattr +i /etc/resolv.conf
 fi
 exit 0
 EOF
-chmod 755 "$SBIN/dnslock-guard"
+chmod 755 "$SBIN/corn-control-guard"
 
-cat > "$UNITS/dnslock-guard.service" <<EOF
+cat > "$UNITS/corn-control-guard.service" <<EOF
 [Unit]
-Description=dnslock: re-apply DNS lock if it drifted
+Description=corn-control: re-apply DNS lock if it drifted
 
 [Service]
 Type=oneshot
-ExecStart=$SBIN/dnslock-guard
+ExecStart=$SBIN/corn-control-guard
 EOF
 
-cat > "$UNITS/dnslock-guard.timer" <<'EOF'
+cat > "$UNITS/corn-control-guard.timer" <<'EOF'
 [Unit]
-Description=dnslock: guard every 5 minutes
+Description=corn-control: guard every 5 minutes
 
 [Timer]
 OnBootSec=1min
@@ -478,7 +478,7 @@ WantedBy=timers.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now dnslock-guard.timer dnslock-update.timer >/dev/null 2>&1
+systemctl enable --now corn-control-guard.timer corn-control-update.timer >/dev/null 2>&1
 ok "guard + daily blocklist timers enabled"
 
 # ---------- 9. lock / unlock tools ------------------------------------------
@@ -487,39 +487,39 @@ LOCKED_FILES=(
   "$DC_DIR/dnscrypt-proxy.toml"
   "$DC_DIR/cloaking-rules.txt"
   "$DC_DIR/allowed-names.txt"
-  "$LOCK_DIR/dnslock.nft"
-  "$LOCK_DIR/resolv.conf"
-  "$LOCK_DIR/extra-blocked.txt"
+  "$ETC/corn-control.nft"
+  "$ETC/resolv.conf"
+  "$ETC/extra-blocked.txt"
   "${GECKO_POLICIES[@]%%|*}"
-  "$UNITS/dnslock-firewall.service"
-  "$UNITS/dnslock-guard.service"
-  "$UNITS/dnslock-guard.timer"
-  "$UNITS/dnslock-update.service"
-  "$UNITS/dnslock-update.timer"
-  "$SBIN/dnslock-guard"
-  "$SBIN/dnslock-update-blocklist"
-  "$SBIN/dnslock-lock"
-  "$SBIN/dnslock-unlock"
+  "$UNITS/corn-control-firewall.service"
+  "$UNITS/corn-control-guard.service"
+  "$UNITS/corn-control-guard.timer"
+  "$UNITS/corn-control-update.service"
+  "$UNITS/corn-control-update.timer"
+  "$SBIN/corn-control-guard"
+  "$SBIN/corn-control-update-blocklist"
+  "$SBIN/corn-control-lock"
+  "$SBIN/corn-control-unlock"
 )
 [[ -f $NM_CONF ]] && LOCKED_FILES+=("$NM_CONF")
-for d in "${CHROMIUM_POLICY_DIRS[@]}"; do LOCKED_FILES+=("$d/dnslock.json"); done
+for d in "${CHROMIUM_POLICY_DIRS[@]}"; do LOCKED_FILES+=("$d/corn-control.json"); done
 
-cat > "$SBIN/dnslock-lock" <<'EOF'
+cat > "$SBIN/corn-control-lock" <<'EOF'
 #!/usr/bin/env bash
-# Managed by dnslock-setup.sh — make all dnslock files immutable.
+# Managed by corn-control-arch.sh — make all corn-control files immutable.
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "Run with sudo."; exit 1; }
-touch /etc/dnslock/locked
-mapfile -t files < <(grep -v '^#' /etc/dnslock/locked-files)
-for f in "${files[@]}" /etc/dnslock/locked /etc/dnslock/locked-files; do
+touch /etc/corn-control/locked
+mapfile -t files < <(grep -v '^#' /etc/corn-control/locked-files)
+for f in "${files[@]}" /etc/corn-control/locked /etc/corn-control/locked-files; do
   [[ -e $f ]] && chattr +i "$f"
 done
-echo "dnslock: locked."
+echo "corn-control: locked."
 EOF
 
-cat > "$SBIN/dnslock-unlock" <<EOF
+cat > "$SBIN/corn-control-unlock" <<EOF
 #!/usr/bin/env bash
-# Managed by dnslock-setup.sh — unlock only after a cooldown.
+# Managed by corn-control-arch.sh — unlock only after a cooldown.
 set -euo pipefail
 [[ \$EUID -eq 0 ]] || { echo "Run with sudo."; exit 1; }
 MIN=${COOLDOWN_MIN}
@@ -532,18 +532,18 @@ for ((m=MIN; m>0; m--)); do
   sleep 60
 done
 echo
-mapfile -t files < <(grep -v '^#' /etc/dnslock/locked-files)
-for f in /etc/dnslock/locked /etc/dnslock/locked-files "\${files[@]}"; do
+mapfile -t files < <(grep -v '^#' /etc/corn-control/locked-files)
+for f in /etc/corn-control/locked /etc/corn-control/locked-files "\${files[@]}"; do
   [[ -e \$f ]] && chattr -i "\$f"
 done
-rm -f /etc/dnslock/locked
-echo "  dnslock: unlocked. Filtering is STILL ON — only the files are editable."
-echo "  Re-lock with: sudo dnslock-lock"
+rm -f /etc/corn-control/locked
+echo "  corn-control: unlocked. Filtering is STILL ON — only the files are editable."
+echo "  Re-lock with: sudo corn-control-lock"
 EOF
-chmod 755 "$SBIN/dnslock-lock" "$SBIN/dnslock-unlock"
+chmod 755 "$SBIN/corn-control-lock" "$SBIN/corn-control-unlock"
 
-{ echo "# files made immutable by dnslock-lock"; printf '%s\n' "${LOCKED_FILES[@]}"; } > "$LOCK_DIR/locked-files"
-ok "dnslock-lock / dnslock-unlock (${COOLDOWN_MIN}-min cooldown) installed"
+{ echo "# files made immutable by corn-control-lock"; printf '%s\n' "${LOCKED_FILES[@]}"; } > "$ETC/locked-files"
+ok "corn-control-lock / corn-control-unlock (${COOLDOWN_MIN}-min cooldown) installed"
 
 # ---------- 10. verify --------------------------------------------------------
 step "Verifying"
@@ -590,9 +590,9 @@ case $LOCK_MODE in
     fi ;;
 esac
 if [[ ${ans,,} == y* ]]; then
-  "$SBIN/dnslock-lock"
+  "$SBIN/corn-control-lock"
 else
-  info "Not locked. When you're happy with it: sudo dnslock-lock"
+  info "Not locked. When you're happy with it: sudo corn-control-lock"
 fi
 echo
 exit

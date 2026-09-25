@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  dnslock-setup-macos.sh — system-wide adult-content DNS lock for macOS
+#  corn-control-macos.sh — system-wide adult-content DNS lock for macOS
 # =============================================================================
 #  Layers:
 #    1. dnscrypt-proxy on 127.0.0.1:53, upstream = CleanBrowsing Adult Filter
@@ -19,12 +19,12 @@
 #    5. Guard daemon re-applies everything every 5 minutes if something drifts.
 #    6. Optional lock: chflags uchg on all config; unlocking = 30-min cooldown.
 #
-#  Usage:   sudo bash dnslock-setup-macos.sh [--lock | --no-lock]
-#           curl -fsSL <raw-url>/dnslock-setup-macos.sh | sudo bash -s -- [--lock | --no-lock]
+#  Usage:   sudo bash corn-control-macos.sh [--lock | --no-lock]
+#           curl -fsSL <raw-url>/corn-control-macos.sh | sudo bash -s -- [--lock | --no-lock]
 #    --lock      lock at the end without asking
 #    --no-lock   don't lock and don't ask (unattended install)
 #    (no flag)   ask at the end; with no terminal to ask on, don't lock
-#  Re-run safe: yes (it unlocks its own files first, if you pass the cooldown).
+#  Re-run safe: yes. If it is locked, run corn-control-unlock first.
 #  Runs on the stock /bin/bash 3.2: no mapfile, no ${var,,}, no assoc arrays.
 # =============================================================================
 
@@ -53,13 +53,13 @@ COOLDOWN_MIN=30
 # Everything lives in one root-owned tree. Not /usr/local/etc or /usr/local/sbin:
 # Homebrew on Intel Macs makes those user-writable, and launchd runs our
 # scripts as root.
-DL=/usr/local/dnslock
-BIN=$DL/bin
-ETC=$DL/etc
-VAR=$DL/var
+PREFIX=/usr/local/corn-control
+BIN=$PREFIX/bin
+ETC=$PREFIX/etc
+VAR=$PREFIX/var
 LINK_DIR=/usr/local/bin                        # convenience symlinks for the commands
 DAEMONS=/Library/LaunchDaemons
-LABEL=local.dnslock
+LABEL=local.corn-control
 MANAGED="/Library/Managed Preferences"
 # Preference domains the browsers read policies from. Managed Preferences win
 # over anything the user sets in ~/Library/Preferences.
@@ -96,7 +96,7 @@ load_daemon() {
 plist_header() {
   printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-    '<!-- Managed by dnslock-setup-macos.sh -->'
+    '<!-- Managed by corn-control-macos.sh -->'
 }
 
 LOCK_MODE=ask
@@ -105,25 +105,25 @@ for arg in "$@"; do
     --lock)    LOCK_MODE=lock ;;
     --no-lock) LOCK_MODE=no-lock ;;
     -h|--help) sed -n '/^#  Usage:/,/^#  Re-run/p' "${BASH_SOURCE[0]:-}" 2>/dev/null \
-                 || echo "Usage: sudo bash dnslock-setup-macos.sh [--lock | --no-lock]"
+                 || echo "Usage: sudo bash corn-control-macos.sh [--lock | --no-lock]"
                exit 0 ;;
     *)         die "Unknown option: $arg (use --lock, --no-lock or --help)" ;;
   esac
 done
 
-[[ $EUID -eq 0 ]] || die "Run as root: sudo bash dnslock-setup-macos.sh"
-[[ $(uname -s) == Darwin ]] || die "This script is for macOS (use dnslock-setup.sh on Arch Linux)."
+[[ $EUID -eq 0 ]] || die "Run as root: sudo bash corn-control-macos.sh"
+[[ $(uname -s) == Darwin ]] || die "This script is for macOS (use corn-control-arch.sh on Arch Linux)."
 
 # If a previous install is locked, refuse — unlocking goes through the cooldown.
 if [[ -f $ETC/locked-files ]] && [[ $(stat -f %Sf "$ETC/locked-files") == *uchg* ]]; then
-  die "DNS lock is active. Run 'sudo dnslock-unlock' first (${COOLDOWN_MIN}-min cooldown), then re-run."
+  die "DNS lock is active. Run 'sudo corn-control-unlock' first (${COOLDOWN_MIN}-min cooldown), then re-run."
 fi
 
 # ---------- 1. dnscrypt-proxy binary -----------------------------------------
 step "Installing dnscrypt-proxy"
 mkdir -p "$BIN" "$ETC/managed" "$VAR"
-chown -R root:wheel "$DL"
-chmod 755 "$DL" "$BIN" "$ETC" "$ETC/managed" "$VAR"
+chown -R root:wheel "$PREFIX"
+chmod 755 "$PREFIX" "$BIN" "$ETC" "$ETC/managed" "$VAR"
 
 case $(uname -m) in
   arm64)  dc_arch=arm64 ;;
@@ -152,7 +152,7 @@ step "Configuring dnscrypt-proxy"
 bootstrap_list=$(printf "'%s:53', " "${CB_BOOTSTRAP[@]}"); bootstrap_list=${bootstrap_list%, }
 
 cat > "$ETC/dnscrypt-proxy.toml" <<EOF
-# Managed by dnslock-setup-macos.sh — edits are overwritten on re-run.
+# Managed by corn-control-macos.sh — edits are overwritten on re-run.
 listen_addresses = ['127.0.0.1:53']
 max_clients = 250
 
@@ -198,7 +198,7 @@ EOF
 
 # Forced SafeSearch. Left side = what apps ask for, right side = what they get.
 cat > "$ETC/cloaking-rules.txt" <<'EOF'
-# Managed by dnslock-setup-macos.sh
+# Managed by corn-control-macos.sh
 www.google.*              forcesafesearch.google.com
 =google.com               forcesafesearch.google.com
 www.bing.com              strict.bing.com
@@ -234,12 +234,12 @@ ok "resolver: ${UPSTREAM} (encrypted), SafeSearch cloaking, allow/block lists"
 step "Installing blocklist auto-updater"
 {
   echo '#!/bin/bash'
-  echo '# Managed by dnslock-setup-macos.sh — downloads the blocklists into dnscrypt-proxy.'
+  echo '# Managed by corn-control-macos.sh — downloads the blocklists into dnscrypt-proxy.'
   echo 'set -euo pipefail'
   echo 'export PATH=/usr/bin:/bin:/usr/sbin:/sbin'
   printf 'URLS=(%s)\n' "$(printf '"%s" ' "${BLOCKLIST_URLS[@]}")"
   cat <<'EOF'
-ETC=/usr/local/dnslock/etc
+ETC=/usr/local/corn-control/etc
 OUT=$ETC/blocked-names.txt
 tmp=$(mktemp); raw=$(mktemp)
 trap 'rm -f "$tmp" "$raw"' EXIT
@@ -260,15 +260,15 @@ awk '
 ' "$raw" > "$tmp"
 entries=$(grep -cvE '^[[:space:]]*(#|$)' "$tmp" || true)
 if (( entries < 20000 )); then
-  echo "dnslock: download looks incomplete ($entries entries) — keeping the old list." >&2
+  echo "corn-control: download looks incomplete ($entries entries) — keeping the old list." >&2
   exit 1
 fi
 install -m 644 "$tmp" "$OUT.new" && mv -f "$OUT.new" "$OUT"
-launchctl kickstart -k system/local.dnslock.dnscrypt-proxy 2>/dev/null || true
-echo "dnslock: blocklist updated ($entries entries)."
+launchctl kickstart -k system/local.corn-control.dnscrypt-proxy 2>/dev/null || true
+echo "corn-control: blocklist updated ($entries entries)."
 EOF
-} > "$BIN/dnslock-update-blocklist"
-chmod 755 "$BIN/dnslock-update-blocklist"
+} > "$BIN/corn-control-update-blocklist"
+chmod 755 "$BIN/corn-control-update-blocklist"
 
 # Daily at a random minute past noon; launchd runs a missed slot after wake.
 {
@@ -278,7 +278,7 @@ chmod 755 "$BIN/dnslock-update-blocklist"
 <dict>
   <key>Label</key><string>${LABEL}.update</string>
   <key>ProgramArguments</key>
-  <array><string>${BIN}/dnslock-update-blocklist</string></array>
+  <array><string>${BIN}/corn-control-update-blocklist</string></array>
   <key>StartCalendarInterval</key>
   <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>$((RANDOM % 60))</integer></dict>
   <key>StandardOutPath</key><string>${VAR}/update.log</string>
@@ -289,7 +289,7 @@ EOF
 } > "$DAEMONS/${LABEL}.update.plist"
 
 # First download happens now, while DNS still works.
-if "$BIN/dnslock-update-blocklist" >/dev/null 2>&1; then
+if "$BIN/corn-control-update-blocklist" >/dev/null 2>&1; then
   ok "blocklist downloaded ($(grep -cvE '^[[:space:]]*(#|$)' "$ETC/blocked-names.txt") entries), daily refresh enabled"
 else
   [[ -f $ETC/blocked-names.txt ]] || cp "$ETC/extra-blocked.txt" "$ETC/blocked-names.txt"
@@ -383,8 +383,8 @@ DOH_IPS=(
   2a07:e340::2 2a07:e340::3 2a07:e340::4
 )
 doh_set=$(printf '%s, ' "${DOH_IPS[@]}"); doh_set=${doh_set%, }
-cat > "$ETC/dnslock.pf" <<EOF
-# Managed by dnslock-setup-macos.sh — loaded into its own pf anchor "dnslock",
+cat > "$ETC/corn-control.pf" <<EOF
+# Managed by corn-control-macos.sh — loaded into its own pf anchor "corn_control",
 # does not touch /etc/pf.conf or your other rules.
 
 # The only plain-DNS server anything may talk to (dnscrypt-proxy bootstrap).
@@ -398,16 +398,16 @@ block return out quick on ! lo0 proto { tcp, udp } to any port { 53, 853 }
 block return out quick proto { tcp, udp } to <doh> port { 443, 853 }
 EOF
 
-pf_err=$(pfctl -q -a dnslock -n -f "$ETC/dnslock.pf" 2>&1) \
-  || die "pf rejected $ETC/dnslock.pf: $(grep -v -e 'Use of -f' -e 'present in the main' -e 'See /etc/pf.conf' -e '^$' <<<"$pf_err")"
+pf_err=$(pfctl -q -a corn_control -n -f "$ETC/corn-control.pf" 2>&1) \
+  || die "pf rejected $ETC/corn-control.pf: $(grep -v -e 'Use of -f' -e 'present in the main' -e 'See /etc/pf.conf' -e '^$' <<<"$pf_err")"
 # The main ruleset has to reference the anchor. It's reloaded from the
 # unchanged /etc/pf.conf with one line appended; the guard redoes this if
 # something (a macOS update, Internet Sharing) reloads pf.conf.
-if ! pfctl -s rules 2>/dev/null | grep -q '^anchor "dnslock"'; then
-  { cat /etc/pf.conf; echo 'anchor "dnslock"'; } | pfctl -q -f - 2>/dev/null \
+if ! pfctl -s rules 2>/dev/null | grep -q '^anchor "corn_control"'; then
+  { cat /etc/pf.conf; echo 'anchor "corn_control"'; } | pfctl -q -f - 2>/dev/null \
     || die "pf rejected /etc/pf.conf + our anchor line"
 fi
-pfctl -q -a dnslock -f "$ETC/dnslock.pf" 2>/dev/null || die "could not load the pf anchor"
+pfctl -q -a corn_control -f "$ETC/corn-control.pf" 2>/dev/null || die "could not load the pf anchor"
 pfctl -s info 2>/dev/null | grep -q 'Status: Enabled' || pfctl -E >/dev/null 2>&1
 pfctl -s info 2>/dev/null | grep -q 'Status: Enabled' || die "could not enable pf"
 ok "outbound DNS/DoT locked to local resolver, public DoH IPs rejected"
@@ -479,22 +479,22 @@ info "${c_dim}Quit and reopen any running browser for policies to load.${c_0}"
 
 # ---------- 8. guard (self-healing) -----------------------------------------
 step "Installing guard (re-applies settings every 5 min)"
-cat > "$BIN/dnslock-guard" <<'EOF'
+cat > "$BIN/corn-control-guard" <<'EOF'
 #!/bin/bash
-# Managed by dnslock-setup-macos.sh — puts things back if anything drifted.
+# Managed by corn-control-macos.sh — puts things back if anything drifted.
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
-ETC=/usr/local/dnslock/etc
+ETC=/usr/local/corn-control/etc
 MANAGED="/Library/Managed Preferences"
 
 # Firewall: anchor referenced from the main ruleset, anchor loaded, pf on.
-if ! pfctl -s rules 2>/dev/null | grep -q '^anchor "dnslock"'; then
-  { cat /etc/pf.conf; echo 'anchor "dnslock"'; } | pfctl -q -f - 2>/dev/null
+if ! pfctl -s rules 2>/dev/null | grep -q '^anchor "corn_control"'; then
+  { cat /etc/pf.conf; echo 'anchor "corn_control"'; } | pfctl -q -f - 2>/dev/null
 fi
-pfctl -a dnslock -s rules 2>/dev/null | grep -q . || pfctl -q -a dnslock -f "$ETC/dnslock.pf" 2>/dev/null
+pfctl -a corn_control -s rules 2>/dev/null | grep -q . || pfctl -q -a corn_control -f "$ETC/corn-control.pf" 2>/dev/null
 pfctl -s info 2>/dev/null | grep -q 'Status: Enabled' || pfctl -E >/dev/null 2>&1
 
 # Resolver and blocklist updater loaded.
-for label in local.dnslock.dnscrypt-proxy local.dnslock.update; do
+for label in local.corn-control.dnscrypt-proxy local.corn-control.update; do
   if ! launchctl print "system/$label" >/dev/null 2>&1; then
     launchctl enable "system/$label"
     launchctl bootstrap system "/Library/LaunchDaemons/$label.plist" 2>/dev/null
@@ -528,7 +528,7 @@ done
 (( pol_changed )) && killall cfprefsd 2>/dev/null
 exit 0
 EOF
-chmod 755 "$BIN/dnslock-guard"
+chmod 755 "$BIN/corn-control-guard"
 
 {
   plist_header
@@ -537,7 +537,7 @@ chmod 755 "$BIN/dnslock-guard"
 <dict>
   <key>Label</key><string>${LABEL}.guard</string>
   <key>ProgramArguments</key>
-  <array><string>${BIN}/dnslock-guard</string></array>
+  <array><string>${BIN}/corn-control-guard</string></array>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>300</integer>
 </dict>
@@ -559,38 +559,38 @@ LOCKED_FILES=(
   "$ETC/cloaking-rules.txt"
   "$ETC/allowed-names.txt"
   "$ETC/extra-blocked.txt"
-  "$ETC/dnslock.pf"
+  "$ETC/corn-control.pf"
   "$DAEMONS/${LABEL}.dnscrypt-proxy.plist"
   "$DAEMONS/${LABEL}.guard.plist"
   "$DAEMONS/${LABEL}.update.plist"
   "$BIN/dnscrypt-proxy"
-  "$BIN/dnslock-guard"
-  "$BIN/dnslock-update-blocklist"
-  "$BIN/dnslock-lock"
-  "$BIN/dnslock-unlock"
+  "$BIN/corn-control-guard"
+  "$BIN/corn-control-update-blocklist"
+  "$BIN/corn-control-lock"
+  "$BIN/corn-control-unlock"
 )
 for dom in "${GECKO_DOMAINS[@]}" "${CHROMIUM_DOMAINS[@]}"; do
   LOCKED_FILES+=("$ETC/managed/$dom.plist" "$MANAGED/$dom.plist")
 done
 
-cat > "$BIN/dnslock-lock" <<'EOF'
+cat > "$BIN/corn-control-lock" <<'EOF'
 #!/bin/bash
-# Managed by dnslock-setup-macos.sh — make all dnslock files immutable.
+# Managed by corn-control-macos.sh — make all corn-control files immutable.
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "Run with sudo."; exit 1; }
-ETC=/usr/local/dnslock/etc
+ETC=/usr/local/corn-control/etc
 touch "$ETC/locked"
 while IFS= read -r f; do
   [[ -z $f || $f == \#* ]] && continue
   [[ -e $f ]] && chflags uchg "$f"
 done < "$ETC/locked-files"
 chflags uchg "$ETC/locked" "$ETC/locked-files"
-echo "dnslock: locked."
+echo "corn-control: locked."
 EOF
 
-cat > "$BIN/dnslock-unlock" <<EOF
+cat > "$BIN/corn-control-unlock" <<EOF
 #!/bin/bash
-# Managed by dnslock-setup-macos.sh — unlock only after a cooldown.
+# Managed by corn-control-macos.sh — unlock only after a cooldown.
 set -euo pipefail
 [[ \$EUID -eq 0 ]] || { echo "Run with sudo."; exit 1; }
 ETC=${ETC}
@@ -610,18 +610,18 @@ while IFS= read -r f; do
   [[ -e \$f ]] && chflags nouchg "\$f"
 done < "\$ETC/locked-files"
 rm -f "\$ETC/locked"
-echo "  dnslock: unlocked. Filtering is STILL ON — only the files are editable."
-echo "  Re-lock with: sudo dnslock-lock"
+echo "  corn-control: unlocked. Filtering is STILL ON — only the files are editable."
+echo "  Re-lock with: sudo corn-control-lock"
 EOF
-chmod 755 "$BIN/dnslock-lock" "$BIN/dnslock-unlock"
+chmod 755 "$BIN/corn-control-lock" "$BIN/corn-control-unlock"
 
-{ echo "# files made immutable by dnslock-lock"; printf '%s\n' "${LOCKED_FILES[@]}"; } > "$ETC/locked-files"
+{ echo "# files made immutable by corn-control-lock"; printf '%s\n' "${LOCKED_FILES[@]}"; } > "$ETC/locked-files"
 
 mkdir -p "$LINK_DIR"
-for cmd in dnslock-lock dnslock-unlock dnslock-update-blocklist; do
+for cmd in corn-control-lock corn-control-unlock corn-control-update-blocklist; do
   ln -sf "$BIN/$cmd" "$LINK_DIR/$cmd"
 done
-ok "dnslock-lock / dnslock-unlock (${COOLDOWN_MIN}-min cooldown) installed in $LINK_DIR"
+ok "corn-control-lock / corn-control-unlock (${COOLDOWN_MIN}-min cooldown) installed in $LINK_DIR"
 
 # ---------- 10. verify --------------------------------------------------------
 step "Verifying"
@@ -677,8 +677,8 @@ case $LOCK_MODE in
     fi ;;
 esac
 case $ans in
-  [yY]*) "$BIN/dnslock-lock" ;;
-  *)     info "Not locked. When you're happy with it: sudo dnslock-lock" ;;
+  [yY]*) "$BIN/corn-control-lock" ;;
+  *)     info "Not locked. When you're happy with it: sudo corn-control-lock" ;;
 esac
 echo
 exit

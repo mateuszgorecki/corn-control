@@ -1,0 +1,2 @@
+# Functions used only through check()/eval look unused to shellcheck.
+disable=SC2329
