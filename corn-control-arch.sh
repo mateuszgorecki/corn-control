@@ -5,8 +5,8 @@
 #  Layers:
 #    1. dnscrypt-proxy on 127.0.0.1:53, upstream = CleanBrowsing Adult Filter
 #       (encrypted), plus HaGeZi NSFW + DoH and StevenBlack porn blocklists
-#       (auto-updated daily) and forced SafeSearch (Google, Bing, DuckDuckGo,
-#       YouTube).
+#       (auto-updated daily) and forced SafeSearch (Google, Bing,
+#       DuckDuckGo).
 #    2. System DNS pinned to 127.0.0.1 (NetworkManager told to keep hands off,
 #       systemd-resolved disabled).
 #    3. nftables: outbound DNS (53) / DoT (853) is rejected unless it goes to
@@ -61,6 +61,9 @@ CHROMIUM_POLICY_DIRS=(
   /etc/opt/chrome/policies/managed
   /etc/brave/policies/managed
 )
+# Pages browsers refuse to open, as host/path prefix (subdomains included).
+# DNS only sees domains, so this goes through browser policy.
+BLOCKED_PAGES=("youtube.com/shorts")
 
 # ---------- helpers ----------------------------------------------------------
 c_ok=$'\e[32m'; c_bad=$'\e[31m'; c_dim=$'\e[2m'; c_b=$'\e[1m'; c_0=$'\e[0m'
@@ -170,11 +173,6 @@ www.bing.com              strict.bing.com
 =duckduckgo.com           safe.duckduckgo.com
 =www.duckduckgo.com       safe.duckduckgo.com
 =start.duckduckgo.com     safe.duckduckgo.com
-=www.youtube.com          restrictmoderate.youtube.com
-=m.youtube.com            restrictmoderate.youtube.com
-=youtubei.googleapis.com  restrictmoderate.youtube.com
-=youtube.googleapis.com   restrictmoderate.youtube.com
-=www.youtube-nocookie.com restrictmoderate.youtube.com
 EOF
 
 # Your own extra blocks (merged into the list on every update).
@@ -393,14 +391,18 @@ systemctl restart corn-control-firewall.service
 ok "outbound DNS/DoT locked to local resolver, public DoH IPs rejected"
 
 # ---------- 7. browser policies ---------------------------------------------
-step "Writing browser policies (DoH off, no proxy/VPN extensions)"
+step "Writing browser policies (DoH off, no proxy/VPN extensions, blocked pages)"
+# Blocked pages in each browser family's syntax (JSON arrays).
+chromium_blocked=$(printf '"%s",' "${BLOCKED_PAGES[@]}"); chromium_blocked="[${chromium_blocked%,}]"
+gecko_blocked=$(printf '"*://*.%s*",' "${BLOCKED_PAGES[@]}"); gecko_blocked="[${gecko_blocked%,}]"
 # Proxy/VPN extensions need the "proxy" permission; blocking it disables them
 # (installed ones too) and locking proxy settings stops manual SOCKS/HTTP proxies.
 ff_ours='{"policies":{
   "DNSOverHTTPS":{"Enabled":false,"Locked":true},
   "ExtensionSettings":{"*":{"blocked_permissions":["proxy"]}},
   "Proxy":{"Mode":"none","Locked":true},
-  "IPProtectionAvailable":false
+  "IPProtectionAvailable":false,
+  "WebsiteFilter":{"Block":'"$gecko_blocked"'}
 }}'
 for entry in "${GECKO_POLICIES[@]}"; do
   pol=${entry%%|*}
@@ -428,9 +430,9 @@ for d in "${CHROMIUM_POLICY_DIRS[@]}"; do
   "DnsOverHttpsMode": "off",
   "BuiltInDnsClientEnabled": false,
   "ForceGoogleSafeSearch": true,
-  "ForceYouTubeRestrict": 1,
   "ExtensionSettings": { "*": { "blocked_permissions": ["proxy", "vpnProvider"] } },
-  "ProxySettings": { "ProxyMode": "direct" }${brave_extra}
+  "ProxySettings": { "ProxyMode": "direct" },
+  "URLBlocklist": ${chromium_blocked}${brave_extra}
 }
 EOF
   jq -e . "$d/corn-control.json" >/dev/null || die "invalid policy JSON in $d/corn-control.json"

@@ -5,8 +5,8 @@
 #  Layers:
 #    1. dnscrypt-proxy on 127.0.0.1:53, upstream = CleanBrowsing Adult Filter
 #       (encrypted), plus HaGeZi NSFW + DoH and StevenBlack porn blocklists
-#       (auto-updated daily) and forced SafeSearch (Google, Bing, DuckDuckGo,
-#       YouTube).
+#       (auto-updated daily) and forced SafeSearch (Google, Bing,
+#       DuckDuckGo).
 #    2. Every network service (Wi-Fi, Ethernet, USB, ...) pinned to DNS
 #       127.0.0.1 with networksetup; iCloud Private Relay switched off through
 #       its DNS canary.
@@ -65,6 +65,9 @@ MANAGED="/Library/Managed Preferences"
 # over anything the user sets in ~/Library/Preferences.
 GECKO_DOMAINS=(org.mozilla.firefox app.zen-browser.zen)
 CHROMIUM_DOMAINS=(com.google.Chrome org.chromium.Chromium com.brave.Browser com.microsoft.Edge)
+# Pages browsers refuse to open, as host/path prefix (subdomains included).
+# DNS only sees domains, so this goes through browser policy.
+BLOCKED_PAGES=("youtube.com/shorts")
 
 # ---------- helpers ----------------------------------------------------------
 c_ok=$'\e[32m'; c_bad=$'\e[31m'; c_dim=$'\e[2m'; c_b=$'\e[1m'; c_0=$'\e[0m'
@@ -206,11 +209,6 @@ www.bing.com              strict.bing.com
 =duckduckgo.com           safe.duckduckgo.com
 =www.duckduckgo.com       safe.duckduckgo.com
 =start.duckduckgo.com     safe.duckduckgo.com
-=www.youtube.com          restrictmoderate.youtube.com
-=m.youtube.com            restrictmoderate.youtube.com
-=youtubei.googleapis.com  restrictmoderate.youtube.com
-=youtube.googleapis.com   restrictmoderate.youtube.com
-=www.youtube-nocookie.com restrictmoderate.youtube.com
 EOF
 
 # Your own extra blocks (merged into the list on every update).
@@ -413,7 +411,7 @@ pfctl -s info 2>/dev/null | grep -q 'Status: Enabled' || die "could not enable p
 ok "outbound DNS/DoT locked to local resolver, public DoH IPs rejected"
 
 # ---------- 7. browser policies ---------------------------------------------
-step "Writing browser policies (DoH off, no proxy/VPN extensions)"
+step "Writing browser policies (DoH off, no proxy/VPN extensions, blocked pages)"
 # apply_policy DOMAIN KEYPATH JSON [KEYPATH JSON ...]
 # Merges the keys into /Library/Managed Preferences/DOMAIN.plist (keeping any
 # other keys already there) and keeps a copy in $ETC/managed for the guard:
@@ -448,6 +446,9 @@ apply_policy() {
 }
 
 mkdir -p "$MANAGED"
+# Blocked pages in each browser family's syntax (JSON arrays).
+chromium_blocked=$(printf '"%s",' "${BLOCKED_PAGES[@]}"); chromium_blocked="[${chromium_blocked%,}]"
+gecko_blocked=$(printf '"*://*.%s*",' "${BLOCKED_PAGES[@]}"); gecko_blocked="[${gecko_blocked%,}]"
 # Proxy/VPN extensions need the "proxy" permission; blocking it disables them
 # (installed ones too) and locking proxy settings stops manual SOCKS/HTTP proxies.
 for dom in "${GECKO_DOMAINS[@]}"; do
@@ -456,10 +457,13 @@ for dom in "${GECKO_DOMAINS[@]}"; do
     DNSOverHTTPS '{"Enabled":false,"Locked":true}' \
     'ExtensionSettings.*.blocked_permissions' '["proxy"]' \
     Proxy '{"Mode":"none","Locked":true}' \
-    IPProtectionAvailable false
+    IPProtectionAvailable false \
+    WebsiteFilter.Block "$gecko_blocked"
 done
 ok "Firefox, Zen"
 
+# ForceYouTubeRestrict 0, not left out: apply_policy merges, so a 1 written by
+# an older version would otherwise stay (Restricted Mode hides comments/posts).
 for dom in "${CHROMIUM_DOMAINS[@]}"; do
   brave_extra=()
   [[ $dom == com.brave.Browser ]] && brave_extra=(BraveVPNDisabled true TorDisabled true)
@@ -467,9 +471,10 @@ for dom in "${CHROMIUM_DOMAINS[@]}"; do
     DnsOverHttpsMode '"off"' \
     BuiltInDnsClientEnabled false \
     ForceGoogleSafeSearch true \
-    ForceYouTubeRestrict 1 \
+    ForceYouTubeRestrict 0 \
     'ExtensionSettings.*.blocked_permissions' '["proxy","vpnProvider"]' \
     ProxySettings '{"ProxyMode":"direct"}' \
+    URLBlocklist "$chromium_blocked" \
     ${brave_extra[@]+"${brave_extra[@]}"}
 done
 killall cfprefsd 2>/dev/null || true   # drop cached preferences so browsers see the new ones
